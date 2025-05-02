@@ -1,0 +1,38 @@
+# Archivos de credenciales y tokens (¡MUY IMPORTANTE!)
+# Contienen información sensible y NUNCA deben ser subidos a un repositorio.
+credentials.json
+token.json
+client_secret_223927306444-4kqemcpclo01arvsr1dqtjtrch92t6p2.apps.googleusercontent.com.json:Zone.Identifier
+credentials.json:Zone.Identifier
+
+# Archivos de caché y compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entornos virtuales
+# Reemplaza 'venv', '.venv', 'env', '.env' con el nombre de tu carpeta de entorno virtual si es diferente.
+venv/
+.venv/
+env/
+.env/
+env.bak/
+venv.bak/
+
+# Archivos específicos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos de configuración de IDEs (opcional, pero recomendado)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Archivos de dependencias (si usas pip freeze > requirements.txt)
+# Es mejor generar requirements.txt y que otros instalen desde ahí.
+# /ruta/a/tu/entorno/lib/pythonX.Y/site-packages/ # Descomentar y ajustar si es necesario, aunque generalmente no se ignora así.
+
+# Archivos de registro (si tu script genera logs)
+*.log
