@@ -3,6 +3,7 @@ import base64
 import webbrowser # Manejo de errores
 import sys # Para leer desde stdin para la entrada manual del código
 from email import message_from_bytes
+from bs4 import BeautifulSoup # Para analizar HTML
 
 # Asegurarse de que la librería 'requests' esté instalada: pip install requests
 try:
@@ -21,6 +22,31 @@ from googleapiclient.errors import HttpError
 # Si modificas estos SCOPES, elimina el archivo token.json.
 # Alcance para acceso de solo lectura a Gmail.
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+
+def clean_html_content(html_content):
+    """
+    Limpia el contenido HTML para extraer el texto visible.
+    """
+    if not html_content:
+        return ""
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # Eliminar etiquetas de script y style
+    for script_or_style in soup(["script", "style"]):
+        script_or_style.decompose()
+
+    # Obtener el texto
+    text = soup.get_text()
+
+    # Romper en líneas y eliminar espacios en blanco iniciales/finales de cada una
+    lines = (line.strip() for line in text.splitlines())
+    # Romper multi-headlines en frases y eliminar espacios en blanco iniciales/finales
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    # Eliminar líneas en blanco y unir
+    text = "\n".join(chunk for chunk in chunks if chunk)
+    
+    return text
+
 
 def authenticate_user(flow):
     """
@@ -205,9 +231,18 @@ def main():
                 print(f"  Asunto: {subject}")
                 print(f"  Fecha: {date}")
                 
+                processed_body = ""
                 if email_body:
+                    if body_mime_type == "text/html":
+                        print(" Limpiando cuerpo HTML...")
+                        processed_body = clean_html_content(email_body)
+                    elif body_mime_type == "text/plain":
+                        processed_body = email_body
+                    else:
+                        processed_body = email_body
+                    
                     print(f" Tipo de Cuerpo: {body_mime_type}")
-                    print(f"  Cuerpo:\n{email_body[:200]}...") # Modificar que tantos caracteres imprimir
+                    print(f"  Cuerpo:\n{processed_body[:200]}...") # Modificar que tantos caracteres imprimir
                 else:
                     print("  Cuerpo: No se encontró contenido de cuerpo en el mensaje.")
 
