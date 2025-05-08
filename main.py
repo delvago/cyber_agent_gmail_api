@@ -62,6 +62,38 @@ def authenticate_user(flow):
         creds = None # Asegurarse de que creds sea None si falla la autenticación
     return creds
 
+def get_email_body(payload):
+    
+    body_content = None
+    mime_type_found = None
+
+    if 'parts' in payload:
+        parts_to_check = payload['parts']
+        # Buscar primer text/plain
+        for part in parts_to_check:
+            if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
+                data = part['body']['data']
+                body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
+                mime_type_found = 'text/plain'
+                break # Encontrado text/plain, es suficiente para salir
+        
+        if not body_content:
+            for part in parts_to_check:
+                if part.get('mimeType') == 'text/html' and 'data' in part.get('body', {}):
+                    data = part['body']['data']
+                    body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
+                    mime_type_found = 'text/html'
+                    break # Encontrado text/html
+                elif part.get('parts'):
+                    for sub_part in part.get('parts',[]):
+                        if sub_part.get('mimeType') == 'text/html' and 'data' in sub_part.get('body', {}):
+                            data = sub_part['body']['data']
+                            body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
+                            mime_type_found = 'text/html'
+                            return body_content, mime_type_found
+    # VOY ACÁ
+
+
 def main():
     """Muestra el uso básico de la API de Gmail con detección automática de navegador
        y fallback manual a consola para autenticación. Obtiene correos recientes.
@@ -128,7 +160,7 @@ def main():
             for message_info in messages:
                 msg_id = message_info['id']
                 # Obtener los detalles completos del mensaje (solo metadatos por eficiencia)
-                message = service.users().messages().get(userId='me', id=msg_id, format='metadata').execute()
+                message = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
 
                 payload = message.get('payload', {})
                 headers = payload.get('headers', [])
