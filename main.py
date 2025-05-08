@@ -4,6 +4,7 @@ import webbrowser # Manejo de errores
 import sys # Para leer desde stdin para la entrada manual del código
 from email import message_from_bytes
 from bs4 import BeautifulSoup # Para analizar HTML
+# import re # En caso de que requiera eliminar signos de puntuación en el procesamiento del texto
 
 # Asegurarse de que la librería 'requests' esté instalada: pip install requests
 try:
@@ -241,10 +242,17 @@ def main():
                     else:
                         processed_body = email_body
                     
+                    text_for_processing = ""
+                    text_for_processing = processed_body.lower() #convertir a minúsculas
+                    text_for_processing = " ".join(text_for_processing.split()) # eliminar espacios extra (en teoría esto lo hace beautifulsoup)
+                    # processed_body = re.sub(r'[^\w\s]', '', processed_body) # Elimina todo lo que no sea palabra o espacio (en caso de querer eliminar signos de puntuación)
+                    
                     print(f" Tipo de Cuerpo: {body_mime_type}")
                     print(f"  Cuerpo:\n{processed_body[:200]}...") # Modificar que tantos caracteres imprimir
                 else:
                     print("  Cuerpo: No se encontró contenido de cuerpo en el mensaje.")
+                    
+                # processed_body SE USARÁ PARA EL PROCESAMIENTO POR LLM
 
 
     except HttpError as error:
