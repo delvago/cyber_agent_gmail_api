@@ -1,6 +1,6 @@
 import os.path
 import base64
-import webbrowser # Importar el módulo webbrowser para capturar su error específico
+import webbrowser # Manejo de errores
 import sys # Para leer desde stdin para la entrada manual del código
 from email import message_from_bytes
 
@@ -23,8 +23,15 @@ from googleapiclient.errors import HttpError
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 def authenticate_user(flow):
-    """Maneja el flujo de autenticación OAuth 2.0, intentando primero el servidor local,
-       luego run_console, y recurriendo al flujo manual de consola si es necesario."""
+    """
+    Maneja el flujo de autenticación OAuth 2.0, intentando primero el servidor local,
+    luego run_console, y recurriendo al flujo manual de consola si es necesario.
+    
+    Args:
+        flow: Flujo de autenticación de InstalledAppFlow de Google.
+    Returns:
+        creds: Credenciales de usuario autenticadas o None si falla la autenticación.
+    """
     creds = None
     try:
         # Intentar primero el flujo del servidor local (abre un navegador)
@@ -63,20 +70,32 @@ def authenticate_user(flow):
     return creds
 
 def get_email_body(payload):
-    
+    """
+    Extrae el cuerpo de un correo electrónico del payload.
+    Busca primero 'text/plain', luego 'text/html'.
+    Devuelve el contenido decodificado o None si no se encuentra.
+
+    Args:
+        payload: Respuesta de la API de Gmail que contiene el cuerpo del correo.
+
+    Returns:
+        body_content: El contenido del cuerpo del correo decodificado.
+        mime_type_found: El tipo MIME encontrado ('text/plain' o 'text/html').
+    """
     body_content = None
     mime_type_found = None
 
     if 'parts' in payload:
         parts_to_check = payload['parts']
-        # Buscar primer text/plain
+        # Buscar primero text/plain
         for part in parts_to_check:
             if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
                 data = part['body']['data']
                 body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
                 mime_type_found = 'text/plain'
-                break # Encontrado text/plain, es suficiente para salir
+                break # Encontrado text/plain, es suficiente
         
+        # Si no se encontró text/plain, buscar text/html
         if not body_content:
             for part in parts_to_check:
                 if part.get('mimeType') == 'text/html' and 'data' in part.get('body', {}):
@@ -84,19 +103,28 @@ def get_email_body(payload):
                     body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
                     mime_type_found = 'text/html'
                     break # Encontrado text/html
+                # A veces el HTML está anidado una capa más adentro
                 elif part.get('parts'):
-                    for sub_part in part.get('parts',[]):
+                    for sub_part in part.get('parts', []):
                         if sub_part.get('mimeType') == 'text/html' and 'data' in sub_part.get('body', {}):
                             data = sub_part['body']['data']
                             body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
                             mime_type_found = 'text/html'
-                            return body_content, mime_type_found
-    # VOY ACÁ
+                            return body_content, mime_type_found # Salir tan pronto como se encuentre
+
+    elif 'body' in payload and 'data' in payload['body']: # Mensaje no multipart, o una parte individual
+        if payload.get('mimeType') in ['text/plain', 'text/html']:
+            data = payload['body']['data']
+            body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
+            mime_type_found = payload.get('mimeType')
+            
+    return body_content, mime_type_found
 
 
 def main():
-    """Muestra el uso básico de la API de Gmail con detección automática de navegador
-       y fallback manual a consola para autenticación. Obtiene correos recientes.
+    """
+    Uso básico de la API de Gmail con detección automática de navegador
+    y fallback manual a consola para autenticación. Obtiene correos recientes.
     """
     creds = None
     # El archivo token.json almacena los tokens de acceso y actualización del usuario, y se
@@ -159,11 +187,13 @@ def main():
             print("Correos Recientes:")
             for message_info in messages:
                 msg_id = message_info['id']
-                # Obtener los detalles completos del mensaje (solo metadatos por eficiencia)
+                # Obtener los detalles completos del mensaje
                 message = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
 
                 payload = message.get('payload', {})
                 headers = payload.get('headers', [])
+                
+                email_body, body_mime_type = get_email_body(payload) # Obtener el cuerpo del correo
 
                 # Extraer cabeceras de Asunto, Remitente y Fecha
                 subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'Sin Asunto')
@@ -174,22 +204,12 @@ def main():
                 print(f"  De: {sender}")
                 print(f"  Asunto: {subject}")
                 print(f"  Fecha: {date}")
-                # print(f"  Snippet: {message.get('snippet', 'N/A')}") # Snippet es una parte corta del cuerpo del mensaje
-
-                # --- Opcional: Obtener y Decodificar Cuerpo (si es necesario) ---
-                # Descomenta abajo si necesitas el cuerpo del correo (cambia format='full' arriba)
-                # if 'parts' in payload:
-                #     parts = payload.get('parts', [])
-                #     data = parts[0]['body']['data'] # Simplista: asume que la primera parte es texto plano
-                #     data = data.replace("-","+").replace("_","/")
-                #     decoded_data = base64.b64decode(data)
-                #     print(f"  Cuerpo (primera parte):\n{decoded_data.decode('utf-8', errors='replace')[:200]}...") # Imprime los primeros 200 caracteres
-                # elif 'body' in payload:
-                #      data = payload['body'].get('data')
-                #      if data:
-                #          data = data.replace("-","+").replace("_","/")
-                #          decoded_data = base64.b64decode(data)
-                #          print(f"  Cuerpo:\n{decoded_data.decode('utf-8', errors='replace')[:200]}...") # Imprime los primeros 200 caracteres
+                
+                if email_body:
+                    print(f" Tipo de Cuerpo: {body_mime_type}")
+                    print(f"  Cuerpo:\n{email_body[:200]}...") # Modificar que tantos caracteres imprimir
+                else:
+                    print("  Cuerpo: No se encontró contenido de cuerpo en el mensaje.")
 
 
     except HttpError as error:
