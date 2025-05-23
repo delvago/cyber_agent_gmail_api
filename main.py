@@ -2,9 +2,9 @@ import os.path
 import base64
 import webbrowser # Manejo de errores
 import sys # Para leer desde stdin para la entrada manual del código
-from email import message_from_bytes
-from bs4 import BeautifulSoup # Para analizar HTML
-# import re # En caso de que requiera eliminar signos de puntuación en el procesamiento del texto
+#from email import message_from_bytes
+from bs4 import BeautifulSoup, Comment # Para limpiar correos e identificar y eliminar comentarios HTML
+import re # Para eliminar URLs y normalizar saltos de línea
 
 # Asegurarse de que la librería 'requests' esté instalada: pip install requests
 try:
@@ -26,27 +26,48 @@ SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 def clean_html_content(html_content):
     """
-    Limpia el contenido HTML para extraer el texto visible.
+    Limpia el contenido HTML para extraer el texto visible. # Docstring original del usuario restaurado
     """
     if not html_content:
         return ""
+    
     soup = BeautifulSoup(html_content, "html.parser")
 
     # Eliminar etiquetas de script y style
-    for script_or_style in soup(["script", "style"]):
+    for script_or_style in soup(["script", "style", "head", "meta", "link"]):
         script_or_style.decompose()
 
-    # Obtener el texto
-    text = soup.get_text()
+    # Eliminar comentarios HTML
+    for comment_tag in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment_tag.extract() 
 
-    # Romper en líneas y eliminar espacios en blanco iniciales/finales de cada una
-    lines = (line.strip() for line in text.splitlines())
-    # Romper multi-headlines en frases y eliminar espacios en blanco iniciales/finales
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    # Eliminar líneas en blanco y unir
-    text = "\n".join(chunk for chunk in chunks if chunk)
+    # Reemplazar <br> con saltos de línea
+    for br_tag in soup.find_all("br"):
+        br_tag.replace_with("\n")
+
+    # Obtener el texto
+    text = soup.get_text(separator="\n", strip=True)
+
+    # Normalizar múltiples saltos de línea y eliminar líneas vacías
+    lines = [line for line in text.splitlines() if line.strip()] # Procesa las líneas para eliminar las vacías
+    cleaned_text_html = "\n".join(lines) # Une las líneas limpias con un solo salto de línea
     
-    return text
+    # Eliminar URLs usando expresiones regulares
+    # Esta expresión regular busca patrones comunes de URL (http, https, ftp, www)
+    url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+|www\.(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+    cleaned_text_no_urls = re.sub(url_pattern, '', cleaned_text_html) # Elimina las URLs encontradas
+    
+    # Re-procesar líneas después de la eliminación de URLs para asegurar que todas las líneas vacías (o que quedaron vacías después del strip) se eliminen,
+    # y luego colapsar múltiples saltos de línea que pudieran persistir.
+    lines_after_url_removal = [line.strip() for line in cleaned_text_no_urls.splitlines()] # Divide en líneas y quita espacios en blanco de cada una
+    non_empty_lines_after_url_removal = [line for line in lines_after_url_removal if line] # Filtra las líneas que quedaron completamente vacías (después de strip)
+    text_reassembled = "\n".join(non_empty_lines_after_url_removal) # Vuelve a unir con un solo salto de línea
+    
+    # Colapso final de múltiples saltos de línea (aunque el paso anterior debería manejar la mayoría de los casos)
+    # y eliminar cualquier espacio en blanco al inicio o final de todo el texto.
+    cleaned_text_final = re.sub(r'\n{2,}', '\n', text_reassembled).strip() 
+    
+    return cleaned_text_final # Devuelve el texto procesado, sin URLs y con saltos de línea normalizados
 
 
 def authenticate_user(flow):
@@ -85,8 +106,8 @@ def authenticate_user(flow):
                 flow.fetch_token(code=code)
                 creds = flow.credentials
             except Exception as fetch_error:
-                 print(f"Error al obtener el token con el código proporcionado: {fetch_error}")
-                 creds = None # Asegurarse de que creds sea None si falla la obtención
+                print(f"Error al obtener el token con el código proporcionado: {fetch_error}")
+                creds = None # Asegurarse de que creds sea None si falla la obtención
         except Exception as console_auth_error:
             print(f"Ocurrió un error durante la autenticación estándar por consola: {console_auth_error}")
             creds = None
@@ -100,7 +121,7 @@ def get_email_body(payload):
     """
     Extrae el cuerpo de un correo electrónico del payload.
     Busca primero 'text/plain', luego 'text/html'.
-    Devuelve el contenido decodificado o None si no se encuentra.
+    Devuelve el contenido decodificado o None si no se encuentra, junto con el tipo MIME.
 
     Args:
         payload: Respuesta de la API de Gmail que contiene el cuerpo del correo.
@@ -111,39 +132,33 @@ def get_email_body(payload):
     """
     body_content = None
     mime_type_found = None
+    
+    preferred_mime_types = ['text/plain', 'text/html'] # Nueva lista para definir el orden de preferencia de los tipos MIME
+
+    # Nueva función anidada para buscar recursivamente el cuerpo en las partes del mensaje
+    def find_body_in_parts(parts_list):
+        # Buscar los tipos MIME preferidos en el orden dado
+        for MimeType in preferred_mime_types: # Itera sobre los tipos MIME preferidos
+            for part in parts_list:
+                if part.get('mimeType') == MimeType and 'data' in part.get('body', {}):
+                    data = part['body']['data']
+                    content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
+                    return content, MimeType
+                # Revisar partes anidadas (ej. multipart/alternative dentro de multipart/mixed)
+                elif 'parts' in part: # Si la parte actual tiene sub-partes, buscar recursivamente
+                    nested_content, nested_mime = find_body_in_parts(part.get('parts', [])) # Llamada recursiva
+                    if nested_content: # Si se encontró contenido en las partes anidadas
+                        return nested_content, nested_mime
+        return None, None # Si no se encuentra contenido en esta rama
 
     if 'parts' in payload:
-        parts_to_check = payload['parts']
-        # Buscar primero text/plain
-        for part in parts_to_check:
-            if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
-                data = part['body']['data']
-                body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
-                mime_type_found = 'text/plain'
-                break # Encontrado text/plain, es suficiente
-        
-        # Si no se encontró text/plain, buscar text/html
-        if not body_content:
-            for part in parts_to_check:
-                if part.get('mimeType') == 'text/html' and 'data' in part.get('body', {}):
-                    data = part['body']['data']
-                    body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
-                    mime_type_found = 'text/html'
-                    break # Encontrado text/html
-                # A veces el HTML está anidado una capa más adentro
-                elif part.get('parts'):
-                    for sub_part in part.get('parts', []):
-                        if sub_part.get('mimeType') == 'text/html' and 'data' in sub_part.get('body', {}):
-                            data = sub_part['body']['data']
-                            body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
-                            mime_type_found = 'text/html'
-                            return body_content, mime_type_found # Salir tan pronto como se encuentre
-
-    elif 'body' in payload and 'data' in payload['body']: # Mensaje no multipart, o una parte individual
-        if payload.get('mimeType') in ['text/plain', 'text/html']:
+        body_content, mime_type_found = find_body_in_parts(payload['parts']) # Llamada a la nueva función helper
+    elif 'body' in payload and 'data' in payload['body']: # Mensaje no multipart, o una parte individual # Comentario original del usuario
+        mime_type = payload.get('mimeType')
+        if mime_type in preferred_mime_types: # Comprueba si el tipo MIME está entre los preferidos
             data = payload['body']['data']
             body_content = base64.urlsafe_b64decode(data.encode('ASCII')).decode('utf-8', errors='replace')
-            mime_type_found = payload.get('mimeType')
+            mime_type_found = mime_type
             
     return body_content, mime_type_found
 
@@ -156,11 +171,11 @@ def main():
     creds = None
     # El archivo token.json almacena los tokens de acceso y actualización del usuario, y se
     # crea automáticamente cuando el flujo de autorización se completa por primera
-    # vez.
+    # vez. # Comentario original del usuario
     if os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
 
-    # Si no hay credenciales (válidas) disponibles, permitir que el usuario inicie sesión.
+    # Si no hay credenciales (válidas) disponibles, permitir que el usuario inicie sesión. # Comentario original del usuario
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -168,41 +183,35 @@ def main():
                 creds.refresh(Request())
             except Exception as e:
                 print(f"No se pudo refrescar el token: {e}. Re-ejecutando autenticación.")
-                # Si falla el refresco, forzar la re-autenticación usando la función auxiliar
-                if not os.path.exists('credentials.json'):
-                     print("Error: credentials.json no encontrado. Por favor, descárgalo desde Google Cloud Console.")
-                     return
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', SCOPES)
-                creds = authenticate_user(flow) # Usar la función auxiliar
-        else:
-            # Iniciar el flujo de autenticación usando la función auxiliar
+                creds = None # Nueva lógica: Forzar re-autenticación si el refresco falla
+        
+        if not creds: # Nuevo bloque: Si creds es None (falló el refresco o no existía token.json válido)
             if not os.path.exists('credentials.json'):
-                 print("Error: credentials.json no encontrado. Por favor, descárgalo desde Google Cloud Console.")
-                 return
+                print("Error: credentials.json no encontrado. Por favor, descárgalo desde Google Cloud Console.")
+                return
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
-            creds = authenticate_user(flow) # Usar la función auxiliar
+            creds = authenticate_user(flow) # Usar la función auxiliar # Comentario original del usuario
 
-        # Guardar las credenciales para la próxima ejecución solo si la autenticación fue exitosa
+        # Guardar las credenciales para la próxima ejecución solo si la autenticación fue exitosa # Comentario original del usuario
         if creds:
             with open('token.json', 'w') as token:
                 token.write(creds.to_json())
         else:
             print("La autenticación falló. Saliendo.")
-            return # Salir si la autenticación falló
+            return # Salir si la autenticación falló # Comentario original del usuario
 
-    # Proceder solo si las credenciales son válidas
+    # Proceder solo si las credenciales son válidas # Comentario original del usuario
     if not creds:
-         print("No se pudieron obtener credenciales válidas. Saliendo.")
-         return
+        print("No se pudieron obtener credenciales válidas. Saliendo.")
+        return
 
     try:
         # Construir el servicio de Gmail
         print("Construyendo el servicio de Gmail...")
         service = build('gmail', 'v1', credentials=creds)
 
-        # --- Obtener Correos Recientes de la Bandeja de Entrada ---
+        # --- Obtener Correos Recientes de la Bandeja de Entrada --- # Comentario original del usuario
         print("\nObteniendo correos recientes de INBOX...")
         # Llamar a la API de Gmail para obtener mensajes en INBOX, obtener máx 5 resultados
         results = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=5).execute()
@@ -220,9 +229,9 @@ def main():
                 payload = message.get('payload', {})
                 headers = payload.get('headers', [])
                 
-                email_body, body_mime_type = get_email_body(payload) # Obtener el cuerpo del correo
+                email_body, body_mime_type = get_email_body(payload) # Obtener el cuerpo del correo # Comentario original del usuario
 
-                # Extraer cabeceras de Asunto, Remitente y Fecha
+                # Extraer cabeceras de Asunto, Remitente y Fecha # Comentario original del usuario
                 subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'Sin Asunto')
                 sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Remitente Desconocido')
                 date = next((h['value'] for h in headers if h['name'] == 'Date'), 'Fecha Desconocida')
@@ -234,29 +243,24 @@ def main():
                 
                 processed_body = ""
                 if email_body:
-                    if body_mime_type == "text/html":
-                        print(" Limpiando cuerpo HTML...")
-                        processed_body = clean_html_content(email_body)
-                    elif body_mime_type == "text/plain":
-                        processed_body = email_body
-                    else:
-                        processed_body = email_body
+                    # La función clean_html_content es robusta para texto plano real.
+                    print(f"Limpiando cuerpo (MIME original: {body_mime_type if body_mime_type else 'Desconocido'})...") # Nueva línea de log
+                    processed_body = clean_html_content(email_body)
                     
-                    text_for_processing = ""
-                    text_for_processing = processed_body.lower() #convertir a minúsculas
-                    text_for_processing = " ".join(text_for_processing.split()) # eliminar espacios extra (en teoría esto lo hace beautifulsoup)
-                    # processed_body = re.sub(r'[^\w\s]', '', processed_body) # Elimina todo lo que no sea palabra o espacio (en caso de querer eliminar signos de puntuación)
-                    
-                    print(f" Tipo de Cuerpo: {body_mime_type}")
-                    print(f"  Cuerpo:\n{processed_body[:200]}...") # Modificar que tantos caracteres imprimir
-                else:
-                    print("  Cuerpo: No se encontró contenido de cuerpo en el mensaje.")
-                    
-                # processed_body SE USARÁ PARA EL PROCESAMIENTO POR LLM
+                    # Convertir a minúsculas y normalizar espacios (incluyendo saltos de línea a espacios)
+                    text_for_llm_processing = " ".join(processed_body.lower().split()) # Nueva variable para el texto listo para LLM
 
+                    print(f"  Cuerpo Procesado :\n{processed_body}")#Si se quiere el cuerpo completo procesado
+                    #print(f"  Cuerpo Procesado (Primeros 500 caracteres):\n{processed_body[:500]}...") # Nueva línea de log con el cuerpo procesado
+                    # print(f"  Texto para LLM (normalizado):\n{text_for_llm_processing[:200]}...") # Descomentar para ver el texto para LLM
+                else:
+                    print("  Cuerpo: No se encontró contenido de cuerpo en el mensaje.") # Comentario original del usuario
+                    
+                # El texto en 'processed_body' (limpio) o 'text_for_llm_processing' (normalizado para LLM) se usará para el procesamiento por LLM
+                # (Comentario actualizado para reflejar las nuevas variables)
 
     except HttpError as error:
-        # TODO(developer) - Manejar errores de la API de Gmail.
+        # TODO(developer) - Manejar errores de la API de Gmail. # Comentario original del usuario
         print(f'Ocurrió un error de la API: {error}')
     except Exception as e:
         print(f'Ocurrió un error inesperado: {e}')
